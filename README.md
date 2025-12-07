@@ -17,4 +17,4 @@ To run the code, you would need:
 	```
 	To make the script executable, run `chmod +x ./resources/kaggle.sh`. Data will be stored in `./data` directory.
 
-**WARNING: before pushin to the repository, make sure that `./data` and `./.kaggle` folders are in the `.gitignore` file (as well as other private/useless data)!**
+**WARNING: before pushing to the repository, make sure that `./data` and `./.kaggle` folders are in the `.gitignore` file (as well as other private/useless data)!**
