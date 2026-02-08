@@ -6,15 +6,21 @@ class TorchMLP:
 
     def __init__(
         self,
+        dim_input: int = None,
+        dim_output: int = None,
         num_layers: int = 2,
         dim_hidden: int = 16,
+        activation_function: str = "ReLU",
+        activation_function_out: str = "softmax",
+        optimizer: str = "adam",
+        dropout_rate: float = 0.1,
         model_type: str = "classifier",
         dtype: torch.dtype = torch.float64,
         device: torch.device = torch.device("cpu"),
     ) -> None: 
         """Implementation of a multi-layer perceptron (MLP) using PyTorch."""
-        self.dim_input = None
-        self.dim_output = None
+        self.dim_input = dim_input
+        self.dim_output = dim_output
         self.dim_hidden = dim_hidden
         self.num_layers = num_layers
         self.model_type = model_type
@@ -22,6 +28,7 @@ class TorchMLP:
         self.device = device
         self.dropout_rate = None
         self.dropout_on = False
+        self.parameters = None
 
     def initialize_layer(
         self,
@@ -210,12 +217,11 @@ class TorchMLP:
     def train_supervised(
         self, 
         inputs: torch.Tensor,
-        data_train: torch.Tensor, 
-        parameters: tuple[tuple[torch.Tensor, torch.Tensor]] = None,
+        targets: torch.Tensor, 
         nn_type: str = "classifier",
-        rate_init: float = 0.05,
+        lr: float = 0.05,
         num_epochs: int = 300, 
-        dim_batch: int = 128,
+        batch_size: int = 128,
         log_step: int = 10,
         lambda_reg: float = 0.0001,
         momentum: float = 0.9,
@@ -232,7 +238,7 @@ class TorchMLP:
             Shape: (NUM_SAMPLES, )
         parameters: tuple[tuple[torch.Tensor, torch.Tensor]]
             Weights and biases for all layers.
-        rate_init: float
+        lr: float
             Initialization value of the learning rate.
         num_epochs: int
             Number of epochs for training.
@@ -248,7 +254,7 @@ class TorchMLP:
         num_samples = inputs.shape[0]
         self.dim_input = inputs.shape[1]
         if self.model_type=="classifier":
-            self.dim_output = int(data_train.max().item()) + 1
+            self.dim_output = int(targets.max().item()) + 1
         else:
             raise ValueError(f"Unknown model_type={self.model_type!r}")
 
@@ -257,13 +263,13 @@ class TorchMLP:
         self.dropout_on = True
 
         # Assign default parameters
-        if parameters is None:
+        if self.parameters is None:
             parameters_init = self.initialize_network(self.dim_input, self.dim_output)
-            parameters = [[W.clone(), b.clone()] for (W, b) in parameters_init]
+            self.parameters = [[W.clone(), b.clone()] for (W, b) in parameters_init]
 
         # Initialize velocities
         # velocities = [[v_W1,v_b1],[v_W2,v_b2],...]
-        velocities = [[torch.zeros_like(W), torch.zeros_like(b)] for (W, b) in parameters]
+        velocities = [[torch.zeros_like(W), torch.zeros_like(b)] for (W, b) in self.parameters]
 
         # Iterate over epochs
         epochs = []
@@ -272,45 +278,45 @@ class TorchMLP:
         for epoch in range(num_epochs + 1):
 
             # Calculate gradient descents within small batches of entire dataset.
-            for batch_start in range(0, num_samples, dim_batch):
+            for batch_start in range(0, num_samples, batch_size):
                 
-                batch_end = batch_start + dim_batch
+                batch_end = batch_start + batch_size
                 batch_inputs = inputs[batch_start:batch_end]
-                batch_Y_true = data_train[batch_start:batch_end]
+                batch_Y_true = targets[batch_start:batch_end]
 
                 # Forward propagation
-                forward_parameters = self.forward(batch_inputs, parameters)
+                forward_parameters = self.forward(batch_inputs, self.parameters)
 
                 # Backward propagation
                 grads = self.backward(batch_inputs, batch_Y_true, \
-                    parameters, forward_parameters)
+                    self.parameters, forward_parameters)
 
                 # Iterate over layers
                 for layer in range(self.num_layers):
                     # L2-regularization
-                    grads[layer][1] += lambda_reg*parameters[layer][0]
+                    grads[layer][1] += lambda_reg*self.parameters[layer][0]
                     # Re-calculate velocities
                     velocities[layer][0] = \
-                        momentum*velocities[layer][0] - rate_init*grads[layer][1]
+                        momentum*velocities[layer][0] - lr*grads[layer][1]
                     velocities[layer][1] = \
-                        momentum*velocities[layer][1] - rate_init*grads[layer][2]
+                        momentum*velocities[layer][1] - lr*grads[layer][2]
                     # Perform gradient descent
-                    parameters[layer][0] += velocities[layer][0]
-                    parameters[layer][1] += velocities[layer][1]
+                    self.parameters[layer][0] += velocities[layer][0]
+                    self.parameters[layer][1] += velocities[layer][1]
 
             # Print out loss function values.
             if (epoch % log_step == 0) or (epoch==num_epochs):
 
                 # Calculate forward propagation on the entire dataset.
                 self.dropout_on = False
-                data_forward = self.forward(inputs, parameters)
+                data_forward = self.forward(inputs, self.parameters)
                 self.dropout_on = True
                 Z_pred, probs_pred = data_forward[-1][0], data_forward[-1][1]
                 # Calculate loss.
-                loss = self.cross_entropy(Z_pred, data_train).item()
+                loss = self.cross_entropy(Z_pred, targets).item()
 
                 # Calculate accuracy.
-                accuracy = (probs_pred.argmax(1) == data_train).float().mean().item()
+                accuracy = (probs_pred.argmax(1) == targets).float().mean().item()
                 # Print out status message.
                 msg = f"\rEpoch {epoch}/{num_epochs}: loss {loss:.4f}, accuracy {accuracy:.4f}"
                 if epoch==num_epochs: msg+="\n"
@@ -321,13 +327,12 @@ class TorchMLP:
                 losses.append(loss)
                 accuracies.append(accuracy)
 
-        return parameters, epochs, losses, accuracies
+        return epochs, losses, accuracies
 
     def validate(
         self,
         inputs: torch.Tensor,
         data_test: torch.Tensor,
-        parameters: tuple[tuple[torch.Tensor, torch.Tensor]],
     ) -> tuple[float, float]:
         """
         Validate network's performance on a test dataset.
@@ -335,7 +340,7 @@ class TorchMLP:
         # Turn off the dropout
         self.dropout_on = False
         # Perform forward propagation.
-        forward_parameters = self.forward(inputs, parameters)
+        forward_parameters = self.forward(inputs, self.parameters)
         logits_pred, probs_pred = forward_parameters[-1][0], forward_parameters[-1][1]
         # Calculate loss.
         loss = self.cross_entropy(logits_pred, data_test).item()
@@ -348,12 +353,11 @@ class TorchMLP:
     def predict(
         self,
         inputs: torch.Tensor,
-        parameters: tuple[tuple[torch.Tensor, torch.Tensor]],
     ) -> torch.Tensor:
         """Predict classes for inputs."""
         # Turn off the dropout
         self.dropout_on = False
         # Perform forward propagation.
-        forward_parameters = self.forward(inputs, parameters)
+        forward_parameters = self.forward(inputs, self.parameters)
         probs_pred = forward_parameters[-1][1]
         return probs_pred.argmax(1)
